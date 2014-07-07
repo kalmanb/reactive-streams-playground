@@ -13,6 +13,7 @@ import akka.stream.{ FlowMaterializer, MaterializerSettings }
 import org.reactivestreams.api.Producer
 
 import com.kalmanb.test.TestSpec
+import scala.concurrent._
 
 class PrimesTest extends TestSpec {
 
@@ -22,7 +23,7 @@ class PrimesTest extends TestSpec {
 
     // generate random numbers
     val producer: Producer[Int] =
-      Flow(genRandom)
+      Flow(getMoreData)
 
         // filter prime numbers
         .filter(rnd ⇒ isPrime(rnd))
@@ -36,7 +37,7 @@ class PrimesTest extends TestSpec {
     ignore("test primes") {
       // Connect two consumer flows to the producer  
       // Slow
-      Flow(producer).foreach { prime:Int ⇒
+      Flow(producer).foreach { prime: Int ⇒
         println(s"slow: $prime")
         // simulate slow consumer
         Thread.sleep(1000)
@@ -52,8 +53,8 @@ class PrimesTest extends TestSpec {
     }
 
     it("with actors") {
-      val conn1 = ActorConsumer[Int](system.actorOf(Props(new Conn(100))))
-      val conn2 = ActorConsumer[Int](system.actorOf(Props(new Conn(200))))
+      val conn1 = ActorConsumer[Int](system.actorOf(Props(new Conn("fast", 10))))
+      val conn2 = ActorConsumer[Int](system.actorOf(Props(new Conn("slow", 200))))
 
       producer.produceTo(conn1)
       producer.produceTo(conn2)
@@ -68,15 +69,35 @@ class PrimesTest extends TestSpec {
     else !(2 to (n - 1)).exists(x ⇒ n % x == 0)
   }
 
-  def genRandom = () ⇒ ThreadLocalRandom.current().nextInt(1000000)
+  def getMoreData = () ⇒ ThreadLocalRandom.current().nextInt(1000000)
 }
 
-class Conn(delay: Int) extends ActorConsumer {
-  override protected def requestStrategy = WatermarkRequestStrategy(10)
+class Conn(name: String, delay: Int) extends ActorConsumer {
+  implicit val ec = context.dispatcher
+  private var inFlight = 0
+
+  override protected def requestStrategy = new MaxInFlightRequestStrategy(10) {
+    override def inFlightInternally = inFlight
+  }
   override def receive = {
     case OnNext(msg: Int) ⇒
-      println(msg)
-      Thread sleep delay
-  }
+      inFlight += 1
+      println(s"$name $msg : $inFlight")
 
+      // Now we do some work - in another actor / future
+      Future {
+        // take a copy of the sender
+        val from = self
+        
+        // Simulate some work
+        Thread sleep delay
+
+        // Once done release
+        from ! 'Done
+      }
+
+    case 'Done ⇒ 
+      println(s"$name : done")
+      inFlight -= 1
+  }
 }
