@@ -21,8 +21,13 @@ class PrimesTest extends TestSpec {
     implicit val system = ActorSystem("Sys")
     val materializer = FlowMaterializer(MaterializerSettings())
 
+    val fastProducer: Producer[Int] =
+      Flow(getMoreData)
+        // materialize as a producer
+        .toProducer(materializer)
+
     // generate random numbers
-    val producer: Producer[Int] =
+    val slowProducer: Producer[Int] =
       Flow(getMoreData)
 
         // filter prime numbers
@@ -34,27 +39,36 @@ class PrimesTest extends TestSpec {
         // materialize as a producer
         .toProducer(materializer)
 
+
     ignore("test primes") {
       // Connect two consumer flows to the producer  
       // Slow
-      Flow(producer).foreach { prime: Int ⇒
+      Flow(slowProducer).foreach { prime: Int ⇒
         println(s"slow: $prime")
         // simulate slow consumer
         Thread.sleep(1000)
       }.consume(materializer)
 
       // Fast
-      Flow(producer).foreach(prime ⇒
+      Flow(slowProducer).foreach(prime ⇒
         println(s"fast: $prime")).
         consume(materializer)
 
       // Infinite stream so we have to kill sbt
     }
 
-    it("basic actors") {
-      val basic = ActorConsumer[Int](system.actorOf(Props(new Basic())))
+    ignore("basic actors") {
+      val conn = ActorConsumer[Int](system.actorOf(Props(new Basic())))
 
-      producer.produceTo(basic)
+      fastProducer.produceTo(conn)
+
+      // Infinite stream so we have to kill sbt
+    }
+
+    it("concurrent") {
+      val conn = ActorConsumer[Int](system.actorOf(Props(new InFlight("conncurrent", 3000))))
+
+      fastProducer.produceTo(conn)
 
       // Infinite stream so we have to kill sbt
     }
@@ -63,8 +77,8 @@ class PrimesTest extends TestSpec {
       val conn1 = ActorConsumer[Int](system.actorOf(Props(new InFlight("fast", 10))))
       val conn2 = ActorConsumer[Int](system.actorOf(Props(new InFlight("slow", 200))))
 
-      producer.produceTo(conn1)
-      producer.produceTo(conn2)
+      slowProducer.produceTo(conn1)
+      slowProducer.produceTo(conn2)
 
       // Infinite stream so we have to kill sbt
     }
@@ -83,6 +97,7 @@ class Basic() extends ActorConsumer {
   override protected def requestStrategy = WatermarkRequestStrategy(10)
   override def receive = {
     case OnNext(msg: Int) ⇒
+      Thread sleep 1000
       println(s"$msg")
   }
 }
@@ -112,6 +127,7 @@ class InFlight(name: String, delay: Int) extends ActorConsumer {
       }
 
     case 'Done ⇒
+      // Ok the future is done - release inFlight
       println(s"$name : done")
       inFlight -= 1
   }
