@@ -1,6 +1,7 @@
 package com.kalmanb
 
 import java.io.{ FileOutputStream, PrintWriter }
+import scala.concurrent._
 import scala.concurrent.forkjoin.ThreadLocalRandom
 import scala.util.Try
 
@@ -13,7 +14,6 @@ import akka.stream.{ FlowMaterializer, MaterializerSettings }
 import org.reactivestreams.api.Producer
 
 import com.kalmanb.test.TestSpec
-import scala.concurrent._
 
 class PrimesTest extends TestSpec {
 
@@ -41,8 +41,7 @@ class PrimesTest extends TestSpec {
         println(s"slow: $prime")
         // simulate slow consumer
         Thread.sleep(1000)
-      }.
-        consume(materializer)
+      }.consume(materializer)
 
       // Fast
       Flow(producer).foreach(prime ⇒
@@ -52,9 +51,17 @@ class PrimesTest extends TestSpec {
       // Infinite stream so we have to kill sbt
     }
 
-    it("with actors") {
-      val conn1 = ActorConsumer[Int](system.actorOf(Props(new Conn("fast", 10))))
-      val conn2 = ActorConsumer[Int](system.actorOf(Props(new Conn("slow", 200))))
+    it("basic actors") {
+      val basic = ActorConsumer[Int](system.actorOf(Props(new Basic())))
+
+      producer.produceTo(basic)
+
+      // Infinite stream so we have to kill sbt
+    }
+
+    ignore("with actors") {
+      val conn1 = ActorConsumer[Int](system.actorOf(Props(new InFlight("fast", 10))))
+      val conn2 = ActorConsumer[Int](system.actorOf(Props(new InFlight("slow", 200))))
 
       producer.produceTo(conn1)
       producer.produceTo(conn2)
@@ -72,7 +79,15 @@ class PrimesTest extends TestSpec {
   def getMoreData = () ⇒ ThreadLocalRandom.current().nextInt(1000000)
 }
 
-class Conn(name: String, delay: Int) extends ActorConsumer {
+class Basic() extends ActorConsumer {
+  override protected def requestStrategy = WatermarkRequestStrategy(10)
+  override def receive = {
+    case OnNext(msg: Int) ⇒
+      println(s"$msg")
+  }
+}
+
+class InFlight(name: String, delay: Int) extends ActorConsumer {
   implicit val ec = context.dispatcher
   private var inFlight = 0
 
@@ -88,7 +103,7 @@ class Conn(name: String, delay: Int) extends ActorConsumer {
       Future {
         // take a copy of the sender
         val from = self
-        
+
         // Simulate some work
         Thread sleep delay
 
@@ -96,7 +111,7 @@ class Conn(name: String, delay: Int) extends ActorConsumer {
         from ! 'Done
       }
 
-    case 'Done ⇒ 
+    case 'Done ⇒
       println(s"$name : done")
       inFlight -= 1
   }
